@@ -102,6 +102,7 @@ Then ask the agent to call `status`; it should report `connected`.
 | `MESSENGER_MCP_PORT` | `8765` | Port |
 | `MESSENGER_MCP_TOKEN` | unset | If set, requests must send `Authorization: Bearer <token>` |
 | `FB_COOKIES` | unset | Cookie string; overrides the config file |
+| `MESSENGER_MCP_DEBUG` | unset | Set to `1` to log bridge output (verbose; includes message metadata) |
 
 With a token:
 

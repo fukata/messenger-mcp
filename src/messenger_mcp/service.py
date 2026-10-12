@@ -15,7 +15,7 @@ from .store import MessageStore, clean_attachments
 logger = logging.getLogger("messenger_mcp")
 
 CONNECT_TIMEOUT = 120.0
-RETRY_MIN = 5.0
+RETRY_MIN = 30.0
 RETRY_MAX = 300.0
 # A dead cookie will not fix itself; do not hammer Facebook's login page.
 AUTH_RETRY = 600.0
@@ -115,7 +115,7 @@ class MessengerService:
                 delay = AUTH_RETRY
             except Exception as error:  # noqa: BLE001 - keep the daemon alive
                 self.state = "reconnecting"
-                self.last_error = f"{type(error).__name__}: {error}"
+                self.last_error = _describe(error)
                 logger.warning("Messenger connection lost: %s", self.last_error)
                 if time.monotonic() - started > 600:
                     delay = RETRY_MIN
@@ -202,6 +202,8 @@ class MessengerService:
             data_fb,
             device_path=str(self._config.device_path),
             e2ee_memory_only=False,
+            debug_errors=self._config.debug,
+            log_level="debug" if self._config.debug else "none",
         )
 
     # ------------------------------------------------------------------
@@ -369,3 +371,12 @@ class MessengerService:
 
 class _AuthError(RuntimeError):
     pass
+
+
+def _describe(error: BaseException) -> str:
+    """fbchat-v2 wraps the useful bridge error in a generic one; show the chain."""
+    parts = []
+    while error is not None and len(parts) < 4:
+        parts.append(f"{type(error).__name__}: {error}")
+        error = error.__cause__ or error.__context__
+    return " <- ".join(parts)

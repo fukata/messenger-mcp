@@ -22,6 +22,7 @@ class Config:
     host: str
     port: int
     token: str | None
+    debug: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -39,6 +40,7 @@ class Config:
             host=os.environ.get("MESSENGER_MCP_HOST", "127.0.0.1"),
             port=int(os.environ.get("MESSENGER_MCP_PORT", "8765")),
             token=os.environ.get("MESSENGER_MCP_TOKEN") or None,
+            debug=os.environ.get("MESSENGER_MCP_DEBUG") == "1",
         )
         if config.host not in LOOPBACK_HOSTS and not config.token:
             raise SystemExit(
