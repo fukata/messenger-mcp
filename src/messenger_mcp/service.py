@@ -194,7 +194,7 @@ class MessengerService:
                 if missing:
                     raise ValueError(f"Missing required cookies: {missing}")
                 keep = {*REQUIRED_COOKIES, "fr", "sb", "wd", "presence"}
-                return {k: v for k, v in cookies.items() if k in keep}
+                return {k: v for k, v in cookies.items() if k in keep and v}
 
         # Persist the E2EE device: a fresh device on every restart cannot
         # decrypt anything sent while the daemon was down.
