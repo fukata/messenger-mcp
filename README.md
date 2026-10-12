@@ -129,3 +129,8 @@ codex mcp add messenger --url http://127.0.0.1:8765/mcp \
 uv sync
 uv run pytest
 ```
+
+## License
+
+[MIT](LICENSE). fbchat-v2 and the E2EE bridge it downloads at runtime are
+separate projects under their own licenses.

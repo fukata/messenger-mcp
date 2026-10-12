@@ -3,6 +3,8 @@ name = "messenger-mcp"
 version = "0.1.0"
 description = "Facebook Messenger as an MCP server for Claude Code, Codex and other MCP clients"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "fukata", email = "tatsuya.fukata@gmail.com" }
 ]
