@@ -57,6 +57,16 @@ class Config:
     def device_path(self) -> Path:
         return self.data_dir / "e2ee_device.json"
 
+    @property
+    def bridge_path(self) -> Path | None:
+        """A locally built bridge (scripts/build-bridge.sh), if there is one.
+        Otherwise fbchat-v2 downloads its own prebuilt binary."""
+        override = os.environ.get("MESSENGER_MCP_BRIDGE")
+        if override:
+            return Path(override).expanduser()
+        local = self.data_dir / "bin" / "fbchat-bridge-e2ee"
+        return local if local.is_file() else None
+
     def ensure_data_dir(self) -> None:
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.data_dir, 0o700)

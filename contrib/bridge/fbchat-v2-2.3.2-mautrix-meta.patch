@@ -1,0 +1,293 @@
+diff --git a/bridge-e2ee/bridge/client.go b/bridge-e2ee/bridge/client.go
+index aa334a2..782ab54 100644
+--- a/bridge-e2ee/bridge/client.go
++++ b/bridge-e2ee/bridge/client.go
+@@ -196,9 +196,9 @@ func NewClient(cfg *ClientConfig) (*Client, error) {
+ 
+ func (c *Client) handleMessagixEvent(ctx context.Context, evt any) {
+ 	switch evt.(type) {
+-	case *messagix.Event_Ready, *messagix.Event_Reconnected:
++	case *messagix.ConnectedEvent, *messagix.ReconnectedEvent:
+ 		c.regularConnected.Store(true)
+-	case *messagix.Event_SocketError, *messagix.Event_PermanentError:
++	case *messagix.TransientDisconnectEvent, *messagix.PermanentErrorEvent:
+ 		c.regularConnected.Store(false)
+ 	}
+ 	c.handleEvent(ctx, evt)
+@@ -282,6 +282,18 @@ func (c *Client) connectE2EE(operations e2eeConnectOperations) (err error) {
+ 		c.rollbackE2EEClient(currentE2EE, currentE2EE.Disconnect)
+ 	}
+ 
++	// Register E2EE first: whatsmeow decides whether the device is paired
++	// when the client is created, so the device ID must already be set.
++	if err = operations.register(); err != nil {
++		return err
++	}
++	if err = operations.save(); err != nil {
++		return fmt.Errorf("failed to persist E2EE device after registration: %w", err)
++	}
++	if err = c.lifecycleError(); err != nil {
++		return err
++	}
++
+ 	// Prepare E2EE client
+ 	e2eeClient, err := operations.prepare()
+ 	if err != nil {
+@@ -316,17 +328,6 @@ func (c *Client) connectE2EE(operations e2eeConnectOperations) (err error) {
+ 	c.E2EE = e2eeClient
+ 	c.lifecycleMu.Unlock()
+ 
+-	// Register E2EE
+-	if err = operations.register(); err != nil {
+-		return err
+-	}
+-	if err = operations.save(); err != nil {
+-		return fmt.Errorf("failed to persist E2EE device after registration: %w", err)
+-	}
+-	if err = c.lifecycleError(); err != nil {
+-		return err
+-	}
+-
+ 	// Register before connecting: ConnectContext may synchronously deliver queued
+ 	// messages, so registering afterwards creates a message-loss window.
+ 	eventHandlerID = e2eeClient.AddEventHandler(c.handleE2EEEvent)
+diff --git a/bridge-e2ee/bridge/events.go b/bridge-e2ee/bridge/events.go
+index 91aebe8..6ff0322 100644
+--- a/bridge-e2ee/bridge/events.go
++++ b/bridge-e2ee/bridge/events.go
+@@ -233,16 +233,16 @@ func (c *Client) handleEvent(ctx context.Context, evt any) {
+ 	})
+ 
+ 	switch e := evt.(type) {
+-	case *messagix.Event_Ready:
++	case *messagix.ConnectedEvent:
+ 		c.emitEvent(EventTypeReady, map[string]any{
+-			"isNewSession": e.IsNewSession,
++			"isNewSession": false,
+ 		})
+ 
+-	case *messagix.Event_Reconnected:
++	case *messagix.ReconnectedEvent:
+ 		c.openRealtimeMessageWindow(standaloneUpsertGraceMs)
+ 		c.emitEvent(EventTypeReconnected, nil)
+ 
+-	case *messagix.Event_SocketError:
++	case *messagix.TransientDisconnectEvent:
+ 		message := "Messenger socket disconnected"
+ 		if e.Err != nil {
+ 			message = e.Err.Error()
+@@ -251,7 +251,7 @@ func (c *Client) handleEvent(ctx context.Context, evt any) {
+ 			Message: message,
+ 		})
+ 
+-	case *messagix.Event_PermanentError:
++	case *messagix.PermanentErrorEvent:
+ 		message := "Messenger connection failed permanently"
+ 		if e.Err != nil {
+ 			message = e.Err.Error()
+@@ -261,9 +261,9 @@ func (c *Client) handleEvent(ctx context.Context, evt any) {
+ 			Code:    1,
+ 		})
+ 
+-	case *messagix.Event_PublishResponse:
+-		if e.Table != nil {
+-			c.handleTable(e.Table)
++	case *table.LSTable:
++		if e != nil {
++			c.handleTable(e)
+ 		}
+ 	}
+ }
+diff --git a/bridge-e2ee/bridge/media.go b/bridge-e2ee/bridge/media.go
+index 6d5aabf..307acf8 100644
+--- a/bridge-e2ee/bridge/media.go
++++ b/bridge-e2ee/bridge/media.go
+@@ -132,27 +132,7 @@ type UploadMediaResult struct {
+ 
+ // UploadMedia uploads media to Messenger
+ func (c *Client) UploadMedia(opts *UploadMediaOptions) (*UploadMediaResult, error) {
+-	media := &messagix.MercuryUploadMedia{
+-		Filename:    opts.Filename,
+-		MimeType:    opts.MimeType,
+-		MediaData:   opts.Data,
+-		IsVoiceClip: opts.IsVoice,
+-	}
+-
+-	resp, err := c.Messagix.SendMercuryUploadRequest(c.ctx, opts.ThreadID, media)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	var fbid int64
+-	if resp.Payload.RealMetadata != nil {
+-		fbid = resp.Payload.RealMetadata.GetFbId()
+-	}
+-
+-	return &UploadMediaResult{
+-		FbID:     fbid,
+-		Filename: opts.Filename,
+-	}, nil
++	return nil, fmt.Errorf("regular media upload is not supported in this build")
+ }
+ 
+ // SendMediaOptions for sending media
+@@ -432,34 +412,7 @@ type SetGroupPhotoOptions struct {
+ 
+ // SetGroupPhoto sets the group photo/avatar
+ func (c *Client) SetGroupPhoto(opts *SetGroupPhotoOptions) error {
+-	// Upload the image first
+-	media := &messagix.MercuryUploadMedia{
+-		Filename:  "group_photo.jpg",
+-		MimeType:  opts.MimeType,
+-		MediaData: opts.Data,
+-	}
+-
+-	resp, err := c.Messagix.SendMercuryUploadRequest(c.ctx, opts.ThreadID, media)
+-	if err != nil {
+-		return fmt.Errorf("failed to upload group photo: %w", err)
+-	}
+-
+-	var imageID int64
+-	if resp.Payload.RealMetadata != nil {
+-		imageID = resp.Payload.RealMetadata.GetFbId()
+-	}
+-	if imageID == 0 {
+-		return fmt.Errorf("no image ID received from upload")
+-	}
+-
+-	// Set the thread image
+-	task := &socket.SetThreadImageTask{
+-		ThreadKey: opts.ThreadID,
+-		ImageID:   imageID,
+-		SyncGroup: 1,
+-	}
+-	_, err = c.Messagix.ExecuteTasks(c.ctx, task)
+-	return err
++	return fmt.Errorf("regular media upload is not supported in this build")
+ }
+ 
+ // RenameThreadOptions for renaming threads
+@@ -1261,6 +1214,7 @@ func (c *Client) DownloadE2EEMedia(opts *DownloadE2EEMediaOptions) (*DownloadE2E
+ 
+ 	maxTemporarySize := maxDownloadedMediaSize + maxEncryptedMediaOverhead
+ 	fileLength := -1
++	_ = fileLength
+ 	if opts.FileSize > 0 {
+ 		maxTemporarySize = opts.FileSize + maxEncryptedMediaOverhead
+ 		fileLength = int(opts.FileSize)
+@@ -1288,9 +1242,9 @@ func (c *Client) DownloadE2EEMedia(opts *DownloadE2EEMediaOptions) (*DownloadE2E
+ 		mediaEncSHA256,
+ 		mediaSHA256,
+ 		mediaKey,
+-		fileLength,
+ 		waMediaType,
+ 		"",
++		false,
+ 		boundedFile,
+ 	)
+ 	if err != nil {
+diff --git a/bridge-e2ee/bridge/store.go b/bridge-e2ee/bridge/store.go
+index 14d75d7..19f4bd3 100644
+--- a/bridge-e2ee/bridge/store.go
++++ b/bridge-e2ee/bridge/store.go
+@@ -392,6 +392,22 @@ func (ds *DeviceStore) PutPrivacyTokens(ctx context.Context, tokens ...store.Pri
+ 	return unsupportedStoreOperation(ctx, "PutPrivacyTokens")
+ }
+ 
++func (ds *DeviceStore) DeleteExpiredPrivacyTokens(ctx context.Context, cutoff time.Time) (int64, error) {
++	return 0, nil
++}
++
++func (ds *DeviceStore) PutNCTSalt(ctx context.Context, salt []byte) error {
++	return nil
++}
++
++func (ds *DeviceStore) GetNCTSalt(ctx context.Context) ([]byte, error) {
++	return nil, nil
++}
++
++func (ds *DeviceStore) DeleteNCTSalt(ctx context.Context) error {
++	return nil
++}
++
+ func (ds *DeviceStore) GetPrivacyToken(ctx context.Context, user waTypes.JID) (*store.PrivacyToken, error) {
+ 	return nil, unsupportedStoreOperation(ctx, "GetPrivacyToken")
+ }
+diff --git a/bridge-e2ee/go.mod b/bridge-e2ee/go.mod
+index 7aec35b..eab0112 100644
+--- a/bridge-e2ee/go.mod
++++ b/bridge-e2ee/go.mod
+@@ -6,43 +6,58 @@ require (
+ 	github.com/google/uuid v1.6.0
+ 	github.com/rs/zerolog v1.35.1
+ 	go.mau.fi/mautrix-meta v0.0.0
+-	go.mau.fi/util v0.9.9-0.20260511124621-9241e81bdf25
+-	go.mau.fi/whatsmeow v0.0.0-20260416104156-3ff20cd3462a
+-	golang.org/x/sys v0.45.0
+-	google.golang.org/protobuf v1.36.11
++	go.mau.fi/util v0.10.2-0.20260918225449-a4c0d5b86aa8
++	go.mau.fi/whatsmeow v0.0.0-20260919103545-0057a822e79a
++	golang.org/x/sys v0.48.0
++	google.golang.org/protobuf v1.36.12
+ )
+ 
+ require (
+ 	filippo.io/edwards25519 v1.2.0 // indirect
++	github.com/andybalholm/brotli v1.2.4 // indirect
++	github.com/apache/thrift v0.24.0 // indirect
+ 	github.com/beeper/argo-go v1.1.2 // indirect
+ 	github.com/beeper/poly1305 v0.0.0-20250815183548-d4eede7bbf3c // indirect
+-	github.com/coder/websocket v1.8.14 // indirect
++	github.com/coder/websocket v1.8.15 // indirect
+ 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
+ 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
++	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
++	github.com/google/flatbuffers v25.12.19+incompatible // indirect
+ 	github.com/google/go-querystring v1.2.0 // indirect
+ 	github.com/gorilla/websocket v1.5.3 // indirect
+-	github.com/mattn/go-colorable v0.1.14 // indirect
++	github.com/icholy/digest v1.2.0 // indirect
++	github.com/imroc/req/v3 v3.56.0 // indirect
++	github.com/klauspost/compress v1.20.0 // indirect
++	github.com/mattn/go-colorable v0.1.15 // indirect
+ 	github.com/mattn/go-isatty v0.0.20 // indirect
+-	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
++	github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261 // indirect
++	github.com/quic-go/qpack v0.6.0 // indirect
++	github.com/quic-go/quic-go v0.61.0 // indirect
++	github.com/refraction-networking/utls v1.8.2 // indirect
+ 	github.com/rs/xid v1.6.0 // indirect
+-	github.com/tidwall/gjson v1.18.0 // indirect
++	github.com/tidwall/gjson v1.19.0 // indirect
+ 	github.com/tidwall/match v1.1.1 // indirect
+ 	github.com/tidwall/pretty v1.2.1 // indirect
+ 	github.com/tidwall/sjson v1.2.5 // indirect
+ 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
+-	github.com/yuin/goldmark v1.8.2 // indirect
+-	go.mau.fi/libsignal v0.2.1 // indirect
++	github.com/yuin/goldmark v1.8.6 // indirect
++	github.com/zyedidia/clipboard v1.0.4 // indirect
++	go.mau.fi/libsignal v0.2.2 // indirect
+ 	go.mau.fi/zeroconfig v0.2.0 // indirect
+-	golang.org/x/crypto v0.51.0 // indirect
+-	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+-	golang.org/x/net v0.55.0 // indirect
+-	golang.org/x/text v0.37.0 // indirect
++	golang.org/x/crypto v0.57.0 // indirect
++	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
++	golang.org/x/image v0.46.0 // indirect
++	golang.org/x/net v0.59.0 // indirect
++	golang.org/x/sync v0.23.0 // indirect
++	golang.org/x/text v0.42.0 // indirect
+ 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+-	maunium.net/go/mautrix v0.27.1-0.20260513120123-5fba7e3afae4 // indirect
++	maunium.net/go/mautrix v0.31.1-0.20261005141226-f14e6b5fc009 // indirect
+ )
+ 
+ // E2EE Messenger requires a forked mautrix-meta. Clone it next to bridge-e2ee:
+ //     git clone https://github.com/mautrix/meta.git ./meta
+ // Or change the path below to point at an existing checkout.
+ replace go.mau.fi/mautrix-meta => ./meta
++
++replace github.com/imroc/req/v3 => github.com/beeper/req/v3 v3.0.0-20260925135712-b49593750e56

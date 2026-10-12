@@ -39,8 +39,7 @@ connection.
 ## Setup
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Linux, macOS and
-Windows (x64) are supported by the prebuilt E2EE bridge that fbchat-v2
-downloads (checksum-verified) on first start.
+Windows should work, but only Linux has been tested.
 
 ```bash
 git clone https://github.com/fukata/messenger-mcp
@@ -48,7 +47,21 @@ cd messenger-mcp
 uv tool install .
 ```
 
-### 1. Cookie
+### 1. Build the bridge
+
+The prebuilt E2EE bridge that fbchat-v2 2.3.2 downloads is built against an
+old mautrix-meta and can no longer connect (`regular connection did not become
+ready`). Build a current one instead (needs git and Go; takes a few minutes):
+
+```bash
+./scripts/build-bridge.sh
+```
+
+It is installed to `~/.local/share/messenger-mcp/bin/` and picked up
+automatically. Regular (non-E2EE) media upload is disabled in this build; the
+server does not use it.
+
+### 2. Cookie
 
 Log in to facebook.com in a browser, open DevTools → Application → Cookies, and
 copy the values of `c_user`, `xs` and `datr` (plus `fr` and `sb` if present) into
@@ -65,7 +78,7 @@ chmod 600 ~/.config/messenger-mcp/config.json
 The file is re-read on every reconnect, so an expired cookie can be replaced
 without restarting.
 
-### 2. Run the daemon
+### 3. Run the daemon
 
 ```bash
 messenger-mcp
@@ -80,7 +93,7 @@ systemctl --user enable --now messenger-mcp
 journalctl --user -u messenger-mcp -f
 ```
 
-### 3. Register with your clients
+### 4. Register with your clients
 
 ```bash
 # Claude Code
@@ -101,6 +114,7 @@ Then ask the agent to call `status`; it should report `connected`.
 | `MESSENGER_MCP_HOST` | `127.0.0.1` | Bind address |
 | `MESSENGER_MCP_PORT` | `8765` | Port |
 | `MESSENGER_MCP_TOKEN` | unset | If set, requests must send `Authorization: Bearer <token>` |
+| `MESSENGER_MCP_BRIDGE` | `<data dir>/bin/fbchat-bridge-e2ee` if present | Path to the bridge binary |
 | `FB_COOKIES` | unset | Cookie string; overrides the config file |
 | `MESSENGER_MCP_DEBUG` | unset | Set to `1` to log bridge output (verbose; includes message metadata) |
 

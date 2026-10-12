@@ -202,6 +202,7 @@ class MessengerService:
             data_fb,
             device_path=str(self._config.device_path),
             e2ee_memory_only=False,
+            binary_path=str(bridge) if (bridge := self._config.bridge_path) else None,
             debug_errors=self._config.debug,
             log_level="debug" if self._config.debug else "none",
         )
