@@ -1,0 +1,14 @@
+[Unit]
+Description=Messenger MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/messenger-mcp
+Restart=on-failure
+RestartSec=10
+# Optional: require a bearer token (see README)
+# Environment=MESSENGER_MCP_TOKEN=change-me
+
+[Install]
+WantedBy=default.target
