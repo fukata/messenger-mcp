@@ -177,3 +177,66 @@ def test_bridge_cookies_do_not_require_fr(service):
     }
     with pytest.raises(ValueError, match="xs"):
         make("c_user=1; datr=3")
+
+
+def test_import_export_is_idempotent_and_keeps_history_in_place(tmp_path):
+    import zipfile
+
+    from messenger_mcp.importer import import_thread, read_export
+
+    export = {
+        "participants": ["Alice", "Me"],
+        "threadName": "Alice_0",
+        "messages": [
+            {"senderName": "Alice", "text": "old", "timestamp": 1000, "type": "text",
+             "isUnsent": False, "media": [], "reactions": []},
+            {"senderName": "Me", "text": "pic", "timestamp": 2000, "type": "media",
+             "isUnsent": False, "media": [{"uri": "media/a.jpeg"}], "reactions": []},
+            {"senderName": "Alice", "text": "new", "timestamp": 9001, "type": "text",
+             "isUnsent": False, "media": [], "reactions": []},
+            {"senderName": "Alice", "text": "", "timestamp": 3000, "type": "media",
+             "isUnsent": False, "media": [{"uri": "media/b.jpeg"}], "reactions": []},
+            {"senderName": "Alice", "text": "", "timestamp": 3000, "type": "media",
+             "isUnsent": False, "media": [{"uri": "media/c.jpeg"}], "reactions": []},
+        ],
+    }
+    path = tmp_path / "export.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Alice_0.json", json.dumps(export))
+        archive.writestr("media/a.jpeg", b"x")
+    store = MessageStore(tmp_path / "m.db")
+    live = store.add(message_id="live", thread_id="200", sender_id="200",
+                     text="new", timestamp_ms=9000)
+    [thread] = read_export(path)
+    # "new" was already captured live; the two same-instant photos are distinct.
+    assert import_thread(store, thread, "200", SELF_ID) == (4, 1)
+    assert import_thread(store, thread, "200", SELF_ID) == (0, 5)
+
+    messages = store.query(thread_id="200")
+    assert [m["text"] for m in messages] == ["old", "pic", "", "", "new"]
+    assert [m["is_self"] for m in messages] == [False, True, False, False, False]
+    assert messages[0]["sender_name"] == "Alice" and messages[0]["encrypted"]
+    assert messages[1]["attachments"] == [{"type": "media", "fileName": "media/a.jpeg"}]
+    # Imported history must not look like newly arrived messages.
+    assert store.query(after_seq=live, live_only=True) == []
+
+
+def test_store_migrates_old_schema(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute(
+        "CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " message_id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL, chat_jid TEXT,"
+        " thread_name TEXT, sender_id TEXT NOT NULL, sender_jid TEXT,"
+        " is_self INTEGER NOT NULL DEFAULT 0, encrypted INTEGER NOT NULL DEFAULT 0,"
+        " text TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '[]',"
+        " reply_to_id TEXT, timestamp_ms INTEGER NOT NULL DEFAULT 0,"
+        " edited INTEGER NOT NULL DEFAULT 0, unsent INTEGER NOT NULL DEFAULT 0)"
+    )
+    db.execute("INSERT INTO messages (message_id, thread_id, sender_id) VALUES ('a', '1', '1')")
+    db.commit(); db.close()
+    store = MessageStore(path)
+    assert store.add(message_id="b", thread_id="1", sender_id="1", imported=True)
+    assert len(store.query(thread_id="1")) == 2

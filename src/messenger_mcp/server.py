@@ -17,7 +17,8 @@ INSTRUCTIONS = """\
 Facebook Messenger for the account owner, through one shared background connection.
 
 - There is no server-side history: get_messages / wait_for_messages only see
-  messages that arrived (or were sent from here) while this daemon was running.
+  messages that arrived (or were sent from here) while this daemon was running,
+  plus any history the owner imported from an export.
   list_threads does query Facebook and shows names, unread counts and snippets.
 - send_message delivers a real message from the owner's personal account.
   Never send unless the owner asked for that message to that recipient.
@@ -58,17 +59,18 @@ def build_server(service: MessengerService, store: MessageStore) -> MCPServer:
     async def get_messages(
         thread_id: str = "",
         limit: int = 30,
-        before_seq: int | None = None,
+        before_timestamp_ms: int | None = None,
         incoming_only: bool = False,
     ) -> dict[str, Any]:
-        """Read locally stored messages, oldest first.
+        """Read locally stored messages (the newest ones, listed oldest first).
 
         With no thread_id, returns the latest messages across all threads.
-        Page backwards with before_seq (the smallest seq already seen).
+        Page backwards with before_timestamp_ms (the smallest timestamp_ms
+        already seen).
         """
         messages = store.query(
             thread_id=_thread_key(thread_id),
-            before_seq=before_seq,
+            before_ms=before_timestamp_ms,
             incoming_only=incoming_only,
             limit=max(1, min(limit, 200)),
         )
@@ -96,6 +98,7 @@ def build_server(service: MessengerService, store: MessageStore) -> MCPServer:
                 thread_id=_thread_key(thread_id),
                 after_seq=cursor,
                 incoming_only=not include_self,
+                live_only=True,
                 limit=50,
             )
             remaining = loop_deadline - time.monotonic()

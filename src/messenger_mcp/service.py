@@ -260,7 +260,7 @@ class MessengerService:
     def with_names(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for message in messages:
             name = self._names.get(message["sender_id"])
-            if name:
+            if name and "sender_name" not in message:
                 message["sender_name"] = name
             if "thread_name" not in message:
                 thread_name = self._names.get(message["thread_id"])

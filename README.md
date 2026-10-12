@@ -31,7 +31,8 @@ connection.
 
 - **No history.** fbchat-v2 has no API to fetch past messages. `get_messages`
   and `wait_for_messages` only return what arrived (or was sent through this
-  server) while the daemon was running. Keep it running.
+  server) while the daemon was running. Keep it running. Older messages can be
+  [imported from an export](#importing-past-messages).
 - Text only. Attachments on incoming messages are listed as metadata; nothing
   is downloaded, and sending attachments is not implemented.
 - Facebook can change its private endpoints at any time and break this.
@@ -104,6 +105,23 @@ codex mcp add messenger --url http://127.0.0.1:8765/mcp
 ```
 
 Then ask the agent to call `status`; it should report `connected`.
+
+## Importing past messages
+
+Past end-to-end encrypted messages cannot be fetched through the API, but
+Messenger can export them: on messenger.com (desktop), open *Privacy & safety →
+End-to-end encrypted chats → Message storage → Download secure storage data*.
+
+The export contains names only, so tell the importer which thread id each
+conversation belongs to (`search_users` or `list_threads` gives you the id):
+
+```bash
+messenger-mcp import messages.zip                      # list conversations
+messenger-mcp import messages.zip --thread "Jane Doe=100012345678"
+```
+
+Importing is idempotent, skips messages the daemon already captured live, and
+does not wake `wait_for_messages`. Media files are listed by name only.
 
 ## Configuration
 

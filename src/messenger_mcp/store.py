@@ -29,10 +29,19 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to_id   TEXT,
     timestamp_ms  INTEGER NOT NULL DEFAULT 0,
     edited        INTEGER NOT NULL DEFAULT 0,
-    unsent        INTEGER NOT NULL DEFAULT 0
+    unsent        INTEGER NOT NULL DEFAULT 0,
+    sender_name   TEXT,
+    imported      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(thread_id, timestamp_ms);
 """
+
+# Columns added after the first release, for databases created before them.
+_MIGRATIONS = {
+    "sender_name": "ALTER TABLE messages ADD COLUMN sender_name TEXT",
+    "imported": "ALTER TABLE messages ADD COLUMN imported INTEGER NOT NULL DEFAULT 0",
+}
 
 # Decryption material for E2EE media must not be handed to the model.
 _ATTACHMENT_KEYS = (
@@ -64,6 +73,11 @@ class MessageStore:
         self._db.row_factory = sqlite3.Row
         if str(path) != ":memory:":
             os.chmod(path, 0o600)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(messages)")}
+        if columns:
+            for column, statement in _MIGRATIONS.items():
+                if column not in columns:
+                    self._db.execute(statement)
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
@@ -85,13 +99,16 @@ class MessageStore:
         attachments: list[dict[str, Any]] | None = None,
         reply_to_id: str | None = None,
         timestamp_ms: int = 0,
+        sender_name: str | None = None,
+        imported: bool = False,
+        unsent: bool = False,
     ) -> int | None:
         """Insert a message. Returns its seq, or None if it was already stored."""
         cursor = self._db.execute(
             "INSERT OR IGNORE INTO messages (message_id, thread_id, chat_jid,"
             " thread_name, sender_id, sender_jid, is_self, encrypted, text,"
-            " attachments, reply_to_id, timestamp_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " attachments, reply_to_id, timestamp_ms, sender_name, imported, unsent)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message_id,
                 thread_id,
@@ -105,6 +122,9 @@ class MessageStore:
                 json.dumps(attachments or [], ensure_ascii=False),
                 reply_to_id,
                 int(timestamp_ms or 0),
+                sender_name,
+                int(imported),
+                int(unsent),
             ),
         )
         self._db.commit()
@@ -131,6 +151,17 @@ class MessageStore:
         ).fetchone()
         return self._row(row) if row else None
 
+    def has_similar(self, thread_id: str, text: str, timestamp_ms: int) -> bool:
+        """Whether the daemon captured the same text live at (nearly) the same
+        time. Exports carry no message ids, so this is how an import avoids
+        duplicating those; imported rows are deduplicated by their own ids."""
+        row = self._db.execute(
+            "SELECT 1 FROM messages WHERE thread_id = ? AND text = ? AND imported = 0"
+            " AND ABS(timestamp_ms - ?) < 5000 LIMIT 1",
+            (thread_id, text or "", int(timestamp_ms)),
+        ).fetchone()
+        return row is not None
+
     def max_seq(self) -> int:
         row = self._db.execute("SELECT COALESCE(MAX(seq), 0) FROM messages").fetchone()
         return int(row[0])
@@ -149,12 +180,16 @@ class MessageStore:
         *,
         thread_id: str | None = None,
         after_seq: int | None = None,
-        before_seq: int | None = None,
+        before_ms: int | None = None,
         incoming_only: bool = False,
+        live_only: bool = False,
         limit: int = 30,
     ) -> list[dict[str, Any]]:
-        """Messages in chronological order. With `after_seq` the oldest matches
-        are returned (cursor paging); otherwise the newest ones."""
+        """Messages, oldest first.
+
+        With `after_seq`: the next messages in arrival order (the cursor used by
+        wait_for_messages). Otherwise: the newest messages by send time, which
+        keeps imported history in its place."""
         where, params = ["1=1"], []
         if thread_id:
             where.append("thread_id = ?")
@@ -162,15 +197,17 @@ class MessageStore:
         if after_seq is not None:
             where.append("seq > ?")
             params.append(after_seq)
-        if before_seq is not None:
-            where.append("seq < ?")
-            params.append(before_seq)
+        if before_ms is not None:
+            where.append("timestamp_ms < ?")
+            params.append(before_ms)
         if incoming_only:
             where.append("is_self = 0")
-        order = "ASC" if after_seq is not None else "DESC"
+        if live_only:
+            where.append("imported = 0")
+        order = "seq ASC" if after_seq is not None else "timestamp_ms DESC, seq DESC"
         rows = self._db.execute(
             f"SELECT * FROM messages WHERE {' AND '.join(where)}"
-            f" ORDER BY seq {order} LIMIT ?",
+            f" ORDER BY {order} LIMIT ?",
             (*params, limit),
         ).fetchall()
         messages = [self._row(row) for row in rows]
@@ -211,6 +248,8 @@ class MessageStore:
         }
         if row["thread_name"]:
             message["thread_name"] = row["thread_name"]
+        if row["sender_name"]:
+            message["sender_name"] = row["sender_name"]
         if row["sender_jid"]:
             message["sender_jid"] = row["sender_jid"]
         attachments = json.loads(row["attachments"])

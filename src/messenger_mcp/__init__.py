@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hmac
+import json
 import logging
 from typing import Any
 
@@ -61,7 +63,58 @@ async def serve(config: Config) -> None:
         store.close()
 
 
+def _import(config: Config, args: argparse.Namespace) -> None:
+    from .importer import import_thread, read_export
+
+    mapping = dict(item.split("=", 1) for item in args.thread)
+    threads = read_export(args.zip)
+    if not mapping:
+        print("Conversations in this export (pass --thread 'NAME=THREAD_ID' to import):")
+        for thread in threads:
+            print(f"  {len(thread.messages):6d} messages  {thread.name}")
+        return
+    unknown = set(mapping) - {thread.name for thread in threads}
+    if unknown:
+        raise SystemExit(f"Not in this export: {sorted(unknown)}")
+    try:
+        device = json.loads(config.device_path.read_text(encoding="utf-8"))
+        self_id = str(device.get("jid_user") or "")
+    except (OSError, ValueError):
+        self_id = ""
+    self_id = args.self_id or self_id
+    if not self_id:
+        raise SystemExit("Could not determine your own user id; pass --self-id.")
+    config.ensure_data_dir()
+    store = MessageStore(config.db_path)
+    for thread in threads:
+        if thread.name in mapping:
+            imported, skipped = import_thread(
+                store, thread, mapping[thread.name].strip(), self_id
+            )
+            print(f"{thread.name}: imported {imported}, already present {skipped}")
+    store.close()
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="messenger-mcp")
+    commands = parser.add_subparsers(dest="command")
+    importer = commands.add_parser(
+        "import", help="import a Messenger 'secure storage data' export (zip)"
+    )
+    importer.add_argument("zip")
+    importer.add_argument(
+        "--thread",
+        action="append",
+        default=[],
+        metavar="NAME=THREAD_ID",
+        help="conversation name in the export and its thread id (repeatable)",
+    )
+    importer.add_argument("--self-id", help="your own Facebook user id")
+    args = parser.parse_args()
+    if args.command == "import":
+        _import(Config.from_env(), args)
+        return
+
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
