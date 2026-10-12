@@ -51,13 +51,13 @@ uv tool install .
 ### 1. Cookie
 
 Log in to facebook.com in a browser, open DevTools → Application → Cookies, and
-copy the values of `c_user`, `xs`, `fr` and `datr` into
+copy the values of `c_user`, `xs` and `datr` (plus `fr` and `sb` if present) into
 `~/.config/messenger-mcp/config.json`:
 
 ```bash
 mkdir -p ~/.config/messenger-mcp
 cat > ~/.config/messenger-mcp/config.json <<'JSON'
-{ "cookies": "c_user=...; xs=...; fr=...; datr=...;" }
+{ "cookies": "c_user=...; xs=...; datr=...; sb=...;" }
 JSON
 chmod 600 ~/.config/messenger-mcp/config.json
 ```

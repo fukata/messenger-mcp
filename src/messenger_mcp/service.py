@@ -19,6 +19,7 @@ RETRY_MIN = 5.0
 RETRY_MAX = 300.0
 # A dead cookie will not fix itself; do not hammer Facebook's login page.
 AUTH_RETRY = 600.0
+REQUIRED_COOKIES = ("c_user", "xs", "datr")
 
 
 class NotConnectedError(RuntimeError):
@@ -141,13 +142,13 @@ class MessengerService:
         if not cookies:
             raise _AuthError(
                 f"No Facebook cookie configured. Put it in {self._config.config_path}"
-                ' as {"cookies": "c_user=...; xs=...; fr=...; datr=...;"}.'
+                ' as {"cookies": "c_user=...; xs=...; datr=...;"}.'
             )
         data_fb = await dataGetHome(cookies)
         if data_fb is None:
             raise _AuthError(
                 "Facebook rejected the cookie (expired, checkpointed, or missing "
-                "c_user/xs/fr/datr). Refresh it in the config file."
+                "c_user/xs/datr). Refresh it in the config file."
             )
         self._data_fb = data_fb
 
@@ -180,11 +181,24 @@ class MessengerService:
     def _make_listener(self, data_fb: dict[str, Any]) -> Any:
         if self._listener_factory is not None:
             return self._listener_factory(data_fb)
+        from fbchat_v2._core._utils import parse_cookie_string
         from fbchat_v2._messaging._listening_e2ee import listeningE2EEEvent
+
+        class Listener(listeningE2EEEvent):
+            def _build_cookie_dict(self) -> dict[str, str]:
+                # fbchat-v2 also demands `fr`, an ads cookie that browsers with
+                # tracking protection never receive. The bridge (mautrix-meta)
+                # only needs these three.
+                cookies = parse_cookie_string(self.dataFB["cookieFacebook"])
+                missing = [c for c in REQUIRED_COOKIES if not cookies.get(c)]
+                if missing:
+                    raise ValueError(f"Missing required cookies: {missing}")
+                keep = {*REQUIRED_COOKIES, "fr", "sb", "wd", "presence"}
+                return {k: v for k, v in cookies.items() if k in keep}
 
         # Persist the E2EE device: a fresh device on every restart cannot
         # decrypt anything sent while the daemon was down.
-        return listeningE2EEEvent(
+        return Listener(
             data_fb,
             device_path=str(self._config.device_path),
             e2ee_memory_only=False,

@@ -166,3 +166,14 @@ async def test_tool_errors_reach_the_client(service):
     mcp = build_server(service, service._store)
     with pytest.raises(ToolError, match="Messenger is auth_error \\(cookie expired\\)"):
         await mcp.call_tool("send_message", {"thread_id": "200", "text": "x"})
+
+
+def test_bridge_cookies_do_not_require_fr(service):
+    make = lambda cookies: service._make_listener(
+        {"FacebookID": SELF_ID, "cookieFacebook": cookies}
+    )._build_cookie_dict()
+    assert make("c_user=1; xs=2; datr=3; sb=4; ps_l=1") == {
+        "c_user": "1", "xs": "2", "datr": "3", "sb": "4"
+    }
+    with pytest.raises(ValueError, match="xs"):
+        make("c_user=1; datr=3")
