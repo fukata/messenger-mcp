@@ -25,6 +25,7 @@ connection.
 | `get_messages` | Read locally stored messages |
 | `wait_for_messages` | Long-poll for new messages (cursor based) |
 | `send_message` | Send a text message (E2EE for 1:1 chats, regular for groups) |
+| `send_file` | Send a local image, video, audio or other file to a 1:1 chat |
 | `search_users` | Find a user id by name |
 
 ### Limitations
@@ -33,8 +34,8 @@ connection.
   and `wait_for_messages` only return what arrived (or was sent through this
   server) while the daemon was running. Keep it running. Older messages can be
   [imported from an export](#importing-past-messages).
-- Text only. Attachments on incoming messages are listed as metadata; nothing
-  is downloaded, and sending attachments is not implemented.
+- Attachments on incoming messages are listed as metadata; nothing is
+  downloaded. Files can be sent to 1:1 chats only, not to groups.
 - Facebook can change its private endpoints at any time and break this.
 
 ## Setup
@@ -132,6 +133,7 @@ does not wake `wait_for_messages`. Media files are listed by name only.
 | `MESSENGER_MCP_HOST` | `127.0.0.1` | Bind address |
 | `MESSENGER_MCP_PORT` | `8765` | Port |
 | `MESSENGER_MCP_TOKEN` | unset | If set, requests must send `Authorization: Bearer <token>` |
+| `MESSENGER_MCP_SEND_DIRS` | home directory, excluding hidden paths | Directories `send_file` may read from (`:`-separated) |
 | `MESSENGER_MCP_BRIDGE` | `<data dir>/bin/fbchat-bridge-e2ee` if present | Path to the bridge binary |
 | `FB_COOKIES` | unset | Cookie string; overrides the config file |
 | `MESSENGER_MCP_DEBUG` | unset | Set to `1` to log bridge output (verbose; includes message metadata) |
@@ -153,8 +155,10 @@ codex mcp add messenger --url http://127.0.0.1:8765/mcp \
   `e2ee_device.json` contains your E2EE device keys. Both live in the data
   directory with owner-only permissions; treat them like the cookie.
 - Incoming message text is untrusted input to the agent reading it. Keep
-  `send_message` behind your client's permission prompt rather than
-  auto-approving it.
+  `send_message` and `send_file` behind your client's permission prompt rather
+  than auto-approving them. `send_file` refuses files outside your home
+  directory and anything under a dot-directory (`~/.ssh`, `~/.config`, ...)
+  unless `MESSENGER_MCP_SEND_DIRS` says otherwise.
 
 ## Development
 

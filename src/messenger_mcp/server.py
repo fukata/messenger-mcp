@@ -128,6 +128,25 @@ def build_server(service: MessengerService, store: MessageStore) -> MCPServer:
                 thread_id, text, mode=mode, reply_to=reply_to_message_id
             )
 
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True))
+    async def send_file(
+        thread_id: str,
+        path: str,
+        caption: str = "",
+        reply_to_message_id: str = "",
+    ) -> dict[str, Any]:
+        """Send a file from this machine to a 1:1 chat from the owner's account.
+
+        path is a local file (max 25 MB). Images and videos are sent as media
+        with the caption; audio and other files are sent as attachments and the
+        caption follows as a separate message. Group chats are not supported.
+        Only send a file the owner explicitly asked to send to that recipient.
+        """
+        with _reported():
+            return await service.send_file(
+                thread_id, path, caption=caption, reply_to=reply_to_message_id
+            )
+
     @mcp.tool(annotations=READ_ONLY)
     async def search_users(query: str) -> dict[str, Any]:
         """Search Facebook users by name (max 5) to find a user id to message."""

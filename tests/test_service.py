@@ -17,6 +17,7 @@ class FakeListener:
         self.sent: list[tuple] = []
         self._stop = threading.Event()
         self.callback = None
+        self._bridge = None
 
     def on_message(self, fn):
         self.callback = fn
@@ -240,3 +241,57 @@ def test_store_migrates_old_schema(tmp_path):
     store = MessageStore(path)
     assert store.add(message_id="b", thread_id="1", sender_id="1", imported=True)
     assert len(store.query(thread_id="1")) == 2
+
+
+class FakeBridge:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call(self, method, params):
+        self.calls.append((method, params))
+        return {"messageId": f"file-{len(self.calls)}", "timestampMs": 7}
+
+
+async def test_send_file_picks_the_bridge_call_by_type(service, tmp_path, monkeypatch):
+    import base64
+
+    monkeypatch.setenv("MESSENGER_MCP_SEND_DIRS", str(tmp_path))
+    bridge = service._listener._bridge = FakeBridge()
+    (tmp_path / "photo.png").write_bytes(b"png-bytes")
+    (tmp_path / "notes.pdf").write_bytes(b"pdf-bytes")
+
+    await service.send_file("200", str(tmp_path / "photo.png"), caption="look")
+    result = await service.send_file("200", str(tmp_path / "notes.pdf"), caption="fyi")
+
+    (image_method, image), (doc_method, doc) = bridge.calls
+    assert image_method == "sendE2EEImage" and doc_method == "sendE2EEDocument"
+    assert image["chatJid"] == "200@msgr" and image["caption"] == "look"
+    assert base64.b64decode(image["data"]) == b"png-bytes" and image["mimeType"] == "image/png"
+    assert doc["filename"] == "notes.pdf" and "caption" not in doc
+    # A document has no caption field, so the caption goes out as text.
+    assert service._listener.sent == [("e2ee", "200@msgr", "fyi", "", "")]
+    assert result["caption_message"]["mode"] == "e2ee"
+    stored = service._store.get("file-1")
+    assert stored["text"] == "look" and stored["attachments"][0]["fileName"] == "photo.png"
+
+
+async def test_send_file_refuses_groups_and_unsafe_paths(service, tmp_path, monkeypatch):
+    service._listener._bridge = FakeBridge()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MESSENGER_MCP_SEND_DIRS", raising=False)
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_rsa").write_bytes(b"key")
+    (tmp_path / "ok.txt").write_bytes(b"hello")
+    (tmp_path / "empty.txt").write_bytes(b"")
+    service._groups.add("900")
+
+    with pytest.raises(ValueError, match="hidden path"):
+        await service.send_file("200", str(tmp_path / ".ssh" / "id_rsa"))
+    with pytest.raises(ValueError, match="outside your home"):
+        await service.send_file("200", "/etc/hostname")
+    with pytest.raises(ValueError, match="1:1"):
+        await service.send_file("900", str(tmp_path / "ok.txt"))
+    with pytest.raises(ValueError, match="1 byte"):
+        await service.send_file("200", str(tmp_path / "empty.txt"))
+    assert service._listener._bridge.calls == []
+    assert (await service.send_file("200", str(tmp_path / "ok.txt")))["kind"] == "file"

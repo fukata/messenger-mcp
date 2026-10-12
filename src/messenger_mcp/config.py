@@ -67,6 +67,32 @@ class Config:
         local = self.data_dir / "bin" / "fbchat-bridge-e2ee"
         return local if local.is_file() else None
 
+    def sendable_file(self, path: str) -> Path:
+        """Resolve a file an MCP client asked to send, or raise ValueError.
+
+        Message text is untrusted input to the agents using this server, so a
+        prompt injection must not be able to mail out keys or credentials:
+        only regular files under MESSENGER_MCP_SEND_DIRS are allowed, and by
+        default that is the home directory minus anything behind a dot-name.
+        """
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file():
+            raise ValueError(f"Not a file: {resolved}")
+        configured = os.environ.get("MESSENGER_MCP_SEND_DIRS")
+        if configured:
+            roots = [Path(p).expanduser().resolve() for p in configured.split(os.pathsep) if p]
+            if not any(resolved.is_relative_to(root) for root in roots):
+                raise ValueError(f"{resolved} is outside MESSENGER_MCP_SEND_DIRS.")
+            return resolved
+        home = Path.home().resolve()
+        if not resolved.is_relative_to(home):
+            raise ValueError(f"{resolved} is outside your home directory.")
+        if any(part.startswith(".") for part in resolved.relative_to(home).parts):
+            raise ValueError(
+                f"{resolved} is in a hidden path; set MESSENGER_MCP_SEND_DIRS to allow it."
+            )
+        return resolved
+
     def ensure_data_dir(self) -> None:
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.data_dir, 0o700)

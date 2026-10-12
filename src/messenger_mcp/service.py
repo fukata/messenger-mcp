@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
+import mimetypes
 import time
 from typing import Any, Callable
 
@@ -19,6 +21,7 @@ RETRY_MIN = 30.0
 RETRY_MAX = 300.0
 # A dead cookie will not fix itself; do not hammer Facebook's login page.
 AUTH_RETRY = 600.0
+MAX_FILE_BYTES = 25 * 1024 * 1024
 REQUIRED_COOKIES = ("c_user", "xs", "datr")
 
 
@@ -340,6 +343,73 @@ class MessengerService:
             "mode": mode,
             "delivery_status": result.get("deliveryStatus") or "unknown",
         }
+
+    async def send_file(
+        self, thread_id: str, path: str, *, caption: str = "", reply_to: str = ""
+    ) -> dict[str, Any]:
+        """Send a local file to a 1:1 (E2EE) chat."""
+        from fbchat_v2._messaging._send_e2ee import normalize_chat_jid
+
+        listener, _ = self._require()
+        thread_id = thread_id.strip()
+        if self.resolve_mode(thread_id, "auto") != "e2ee":
+            raise ValueError("Files can only be sent to 1:1 (end-to-end encrypted) chats.")
+        file = self._config.sendable_file(path)
+        size = file.stat().st_size
+        if size == 0 or size > MAX_FILE_BYTES:
+            raise ValueError(f"File must be 1 byte to {MAX_FILE_BYTES // 2**20} MB.")
+        bridge = listener._bridge
+        if bridge is None:
+            raise NotConnectedError("Messenger bridge is not running.")
+
+        chat_jid = normalize_chat_jid(thread_id)
+        replied = self._store.get(reply_to) if reply_to else None
+        mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+        kind = mime.split("/", 1)[0]
+        params: dict[str, Any] = {
+            "chatJid": chat_jid,
+            "data": base64.b64encode(await asyncio.to_thread(file.read_bytes)).decode(),
+            "mimeType": mime,
+            "replyToId": reply_to,
+            "replyToSenderJid": (replied or {}).get("sender_jid") or "",
+        }
+        if kind in ("image", "video"):
+            method = "sendE2EEImage" if kind == "image" else "sendE2EEVideo"
+            params["caption"] = caption
+        elif kind == "audio":
+            method, params["ptt"] = "sendE2EEAudio", False
+        else:
+            method, kind, params["filename"] = "sendE2EEDocument", "file", file.name
+        result = await bridge.call(method, params)
+
+        store_thread = chat_jid.split("@", 1)[0]
+        message_id = result.get("messageId")
+        captioned = kind in ("image", "video")
+        if message_id:
+            self._store.add(
+                message_id=str(message_id),
+                thread_id=store_thread,
+                chat_jid=chat_jid,
+                thread_name=self._names.get(store_thread),
+                sender_id=self.self_id or "",
+                is_self=True,
+                encrypted=True,
+                text=caption if captioned else "",
+                attachments=[{"type": kind, "fileName": file.name, "mimeType": mime}],
+                reply_to_id=reply_to or None,
+                timestamp_ms=result.get("timestampMs") or int(time.time() * 1000),
+            )
+        sent = {
+            "message_id": message_id,
+            "thread_id": store_thread,
+            "file": file.name,
+            "kind": kind,
+            "delivery_status": result.get("deliveryStatus") or "unknown",
+        }
+        if caption.strip() and not captioned:
+            # Audio and documents have no caption field; follow up with text.
+            sent["caption_message"] = await self.send(thread_id, caption, mode="e2ee")
+        return sent
 
     async def list_threads(self) -> list[dict[str, Any]]:
         from fbchat_v2._features._thread import _all_thread_data
